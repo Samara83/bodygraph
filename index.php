@@ -92,7 +92,6 @@ if (empty($geoData['results'][0])) {
 
 $latitude = $geoData['results'][0]['geometry']['location']['lat'];
 $longitude = $geoData['results'][0]['geometry']['location']['lng'];
-echo json_encode(['latitude' => $latitude, 'longitude' => $longitude], JSON_PRETTY_PRINT);
 
 // Extract city
 $city = '';
@@ -184,7 +183,7 @@ $divineParams = [
 |--------------------------------------------------------------------------
 */
 
-// House Cusps (for Ascendant & MC & Planet Houses)
+// House Cusps (for Ascendant & MC)
 $houseParams = array_merge($divineParams, ['with_rulers' => 1]);
 $houseCusps = makeRequest(
     'https://astroapi-4.divineapi.com/western-api/v1/house-cusps',
@@ -220,27 +219,49 @@ $aspectTable = makeRequest(
 |--------------------------------------------------------------------------
 */
 
-// Convert decimal degree to proper format for display (keep as decimal for calculations, but format nicely)
-function formatDegree($decimalDegree) {
-    // Keep as decimal but round to 6 decimal places for consistency
-    return round($decimalDegree, 6);
+/**
+ * Convert decimal degree to Degree:Minute:Second format
+ */
+function decimalToDMS($decimalDegree) {
+    $degrees = floor($decimalDegree);
+    $minutesDecimal = ($decimalDegree - $degrees) * 60;
+    $minutes = floor($minutesDecimal);
+    $seconds = round(($minutesDecimal - $minutes) * 60);
+    
+    // Fix seconds rounding
+    if ($seconds == 60) {
+        $seconds = 0;
+        $minutes++;
+    }
+    if ($minutes == 60) {
+        $minutes = 0;
+        $degrees++;
+    }
+    
+    return sprintf("%d°%02d'%02d\"", $degrees, $minutes, $seconds);
 }
 
-// Extract sign from degree and return sign name and degree in sign
-function getSignFromDegree($degree) {
+/**
+ * Get degree within sign (0-30) from full degree
+ */
+function getDegreeInSign($fullDegree) {
+    return fmod($fullDegree, 30);
+}
+
+/**
+ * Get sign name from full degree
+ */
+function getSignFromDegree($fullDegree) {
     $signs = ['Aries', 'Taurus', 'Gemini', 'Cancer', 'Leo', 'Virgo', 
               'Libra', 'Scorpio', 'Sagittarius', 'Capricorn', 'Aquarius', 'Pisces'];
     
-    $signIndex = floor($degree / 30);
-    $degreeInSign = fmod($degree, 30);
-    
-    return [
-        'sign' => $signs[$signIndex],
-        'degree' => round($degreeInSign, 6)
-    ];
+    $signIndex = floor($fullDegree / 30);
+    return $signs[$signIndex % 12];
 }
 
-// Get house number from planetary position using house cusps
+/**
+ * Get house number from planetary position using house cusps
+ */
 function getHouseNumber($planetDegree, $houseCuspsData) {
     if (!$houseCuspsData || !isset($houseCuspsData['data']['houses'])) {
         return null;
@@ -249,21 +270,27 @@ function getHouseNumber($planetDegree, $houseCuspsData) {
     $houses = $houseCuspsData['data']['houses'];
     $planetNorm = $planetDegree;
     
-    // Handle 0 degree wrap-around
-    for ($i = 0; $i < 12; $i++) {
-        $cuspStart = $houses[$i]['full_degree'];
-        $cuspEnd = $houses[($i + 1) % 12]['full_degree'];
+    // Sort houses by house number
+    usort($houses, function($a, $b) {
+        return $a['house'] - $b['house'];
+    });
+    
+    for ($i = 0; $i < count($houses); $i++) {
+        $currentHouse = $houses[$i];
+        $nextHouse = $houses[($i + 1) % count($houses)];
         
-        // Adjust for 0-degree wrap
+        $cuspStart = $currentHouse['full_degree'];
+        $cuspEnd = $nextHouse['full_degree'];
+        
+        // Handle wrap around 0 degree
         if ($cuspEnd < $cuspStart) {
-            $cuspEnd += 360;
-            $planetCheck = ($planetNorm < $cuspStart) ? $planetNorm + 360 : $planetNorm;
+            if ($planetNorm >= $cuspStart || $planetNorm < $cuspEnd) {
+                return $currentHouse['house'];
+            }
         } else {
-            $planetCheck = $planetNorm;
-        }
-        
-        if ($planetCheck >= $cuspStart && $planetCheck < $cuspEnd) {
-            return $houses[$i]['house'];
+            if ($planetNorm >= $cuspStart && $planetNorm < $cuspEnd) {
+                return $currentHouse['house'];
+            }
         }
     }
     
@@ -292,17 +319,17 @@ $midheaven = null;
 if (isset($houseCusps['success']) && $houseCusps['success'] == 1 && isset($houseCusps['data']['houses'])) {
     foreach ($houseCusps['data']['houses'] as $house) {
         if ($house['house'] == 1) {
-            $ascData = getSignFromDegree($house['full_degree']);
             $ascendant = [
-                'sign' => $ascData['sign'], 
-                'degree' => formatDegree($ascData['degree'])
+                'sign' => getSignFromDegree($house['full_degree']),
+                'degree' => getDegreeInSign($house['full_degree']),
+                'dms' => decimalToDMS($house['full_degree'])
             ];
         }
         if ($house['house'] == 10) {
-            $mcData = getSignFromDegree($house['full_degree']);
             $midheaven = [
-                'sign' => $mcData['sign'], 
-                'degree' => formatDegree($mcData['degree'])
+                'sign' => getSignFromDegree($house['full_degree']),
+                'degree' => getDegreeInSign($house['full_degree']),
+                'dms' => decimalToDMS($house['full_degree'])
             ];
         }
     }
@@ -318,31 +345,51 @@ $planetNameMap = [
     'North node' => 'North Node', 'South node' => 'South Node'
 ];
 
+// First, get house cusps as reference if planetary positions don't have house info
+$houseCuspsReference = null;
+if (isset($houseCusps['success']) && $houseCusps['success'] == 1 && isset($houseCusps['data']['houses'])) {
+    $houseCuspsReference = $houseCusps;
+}
+
 if (isset($planetaryPositions['success']) && $planetaryPositions['success'] == 1 && isset($planetaryPositions['data'])) {
     foreach ($planetaryPositions['data'] as $planet) {
         $planetName = $planet['name'];
         
-        // Skip Ascendant, MC, Part of fortune for planets list
+        // Skip Ascendant, MC for planets list
         if (in_array($planetName, ['Ascendant', 'MC', 'Part of fortune'])) {
             continue;
         }
         
         $displayName = $planetNameMap[$planetName] ?? $planetName;
+        $fullDegree = $planet['full_degree'];
         
-        // Get sign from degree
-        $signData = getSignFromDegree($planet['full_degree']);
+        // Get house number - use pre-calculated house from API if available
+        $houseNumber = null;
         
-        // Get house number - use house from API if available, otherwise calculate
-        $houseNumber = $planet['house'] ?? getHouseNumber($planet['full_degree'], $houseCusps);
+        // Method 1: Check if API provided house directly (in full_degree field format)
+        if (isset($planet['house']) && $planet['house'] > 0) {
+            $houseNumber = $planet['house'];
+        }
+        
+        // Method 2: Calculate from house cusps
+        if ($houseNumber === null && $houseCuspsReference) {
+            $houseNumber = getHouseNumber($fullDegree, $houseCuspsReference);
+        }
         
         $planets[] = [
             'planet' => $displayName,
-            'sign' => $signData['sign'],
-            'degree' => formatDegree($planet['full_degree']),
+            'sign' => getSignFromDegree($fullDegree),
+            'degree' => round(getDegreeInSign($fullDegree), 6),
+            'dms' => decimalToDMS($fullDegree),
             'house' => $houseNumber
         ];
     }
 }
+
+// Sort planets by house number
+usort($planets, function($a, $b) {
+    return ($a['house'] ?? 99) - ($b['house'] ?? 99);
+});
 
 // Extract aspects
 $aspects = [];
