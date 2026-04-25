@@ -109,6 +109,9 @@ if (empty($city)) {
         }
     }
 }
+if (empty($city)) {
+    $city = $state;
+}
 
 /*
 |--------------------------------------------------------------------------
@@ -121,7 +124,8 @@ $tzData = makeRequest($timezone_url);
 
 $timezone = $tzData['timeZoneId'] ?? 'Europe/London';
 $rawOffset = $tzData['rawOffset'] ?? 0;
-$tzone = $rawOffset / 3600;
+$dstOffset = $tzData['dstOffset'] ?? 0;
+$tzone = ($rawOffset + $dstOffset) / 3600;
 
 /*
 |--------------------------------------------------------------------------
@@ -130,23 +134,25 @@ $tzone = $rawOffset / 3600;
 */
 $hour_input = max(0, min(23, intval($hour)));
 $minutes_input = max(0, min(59, intval($minutes)));
+$seconds_input = 0;
 $birth_time = sprintf('%02d:%02d', $hour_input, $minutes_input);
 $birth_date_time = "$year-$month-$day $birth_time";
 
 /*
 |--------------------------------------------------------------------------
-| STEP 4: BODYGRAPH HD API (HUMAN DESIGN)
+| STEP 4: BODYGRAPH HD API (HUMAN DESIGN) - FIXED PARSING
 |--------------------------------------------------------------------------
 */
+// Get location timezone from BodyGraph
 $bg_url = "https://api.bodygraphchart.com/v210502/locations?api_key={$bg_api_key}&query=" . urlencode($city ?: $state);
 $bgData = makeRequest($bg_url);
 
-if (empty($bgData) || isset($bgData['error'])) {
-    $bgData = [['value' => $city ?: $state, 'timezone' => $timezone]];
+$bgTimezone = $timezone;
+if (!empty($bgData) && !isset($bgData['error']) && isset($bgData[0]['timezone'])) {
+    $bgTimezone = $bgData[0]['timezone'];
 }
 
-$bgTimezone = $bgData[0]['timezone'] ?? $timezone;
-
+// Get HD data
 $hd_url = 'https://api.bodygraphchart.com/v221006/hd-data?api_key='
     . urlencode($bg_api_key)
     . '&date=' . urlencode($birth_date_time)
@@ -156,7 +162,7 @@ $hd_response = makeRequest($hd_url);
 
 /*
 |--------------------------------------------------------------------------
-| STEP 5: DIVINE API PARAMS
+| STEP 5: DIVINE API BASE PARAMS
 |--------------------------------------------------------------------------
 */
 $divineParams = [
@@ -167,14 +173,15 @@ $divineParams = [
     'year' => (int)$year,
     'hour' => (int)$hour_input,
     'min' => (int)$minutes_input,
-    'sec' => 0,
+    'sec' => $seconds_input,
     'gender' => $gender,
     'place' => $city ?: $state,
     'lat' => (float)$latitude,
     'lon' => (float)$longitude,
     'tzone' => (float)$tzone,
     'lan' => $language,
-    'house_system' => $house_system
+    'house_system' => $house_system,
+    'node_type' => 'meannode'
 ];
 
 /*
@@ -183,7 +190,7 @@ $divineParams = [
 |--------------------------------------------------------------------------
 */
 
-// House Cusps (for Ascendant & MC)
+// House Cusps
 $houseParams = array_merge($divineParams, ['with_rulers' => 1]);
 $houseCusps = makeRequest(
     'https://astroapi-4.divineapi.com/western-api/v1/house-cusps',
@@ -219,16 +226,12 @@ $aspectTable = makeRequest(
 |--------------------------------------------------------------------------
 */
 
-/**
- * Convert decimal degree to Degree:Minute:Second format
- */
 function decimalToDMS($decimalDegree) {
     $degrees = floor($decimalDegree);
     $minutesDecimal = ($decimalDegree - $degrees) * 60;
     $minutes = floor($minutesDecimal);
     $seconds = round(($minutesDecimal - $minutes) * 60);
     
-    // Fix seconds rounding
     if ($seconds == 60) {
         $seconds = 0;
         $minutes++;
@@ -241,16 +244,10 @@ function decimalToDMS($decimalDegree) {
     return sprintf("%d°%02d'%02d\"", $degrees, $minutes, $seconds);
 }
 
-/**
- * Get degree within sign (0-30) from full degree
- */
 function getDegreeInSign($fullDegree) {
     return fmod($fullDegree, 30);
 }
 
-/**
- * Get sign name from full degree
- */
 function getSignFromDegree($fullDegree) {
     $signs = ['Aries', 'Taurus', 'Gemini', 'Cancer', 'Leo', 'Virgo', 
               'Libra', 'Scorpio', 'Sagittarius', 'Capricorn', 'Aquarius', 'Pisces'];
@@ -259,60 +256,20 @@ function getSignFromDegree($fullDegree) {
     return $signs[$signIndex % 12];
 }
 
-/**
- * Get house number from planetary position using house cusps
- */
-function getHouseNumber($planetDegree, $houseCuspsData) {
-    if (!$houseCuspsData || !isset($houseCuspsData['data']['houses'])) {
-        return null;
-    }
-    
-    $houses = $houseCuspsData['data']['houses'];
-    $planetNorm = $planetDegree;
-    
-    // Sort houses by house number
-    usort($houses, function($a, $b) {
-        return $a['house'] - $b['house'];
-    });
-    
-    for ($i = 0; $i < count($houses); $i++) {
-        $currentHouse = $houses[$i];
-        $nextHouse = $houses[($i + 1) % count($houses)];
-        
-        $cuspStart = $currentHouse['full_degree'];
-        $cuspEnd = $nextHouse['full_degree'];
-        
-        // Handle wrap around 0 degree
-        if ($cuspEnd < $cuspStart) {
-            if ($planetNorm >= $cuspStart || $planetNorm < $cuspEnd) {
-                return $currentHouse['house'];
-            }
-        } else {
-            if ($planetNorm >= $cuspStart && $planetNorm < $cuspEnd) {
-                return $currentHouse['house'];
-            }
-        }
-    }
-    
-    return null;
-}
-
 /*
 |--------------------------------------------------------------------------
 | STEP 8: FORMAT ASTROLOGY DATA
 |--------------------------------------------------------------------------
 */
 
-// House system mapping
 $houseSystemMap = [
     'P' => 'Placidus', 'K' => 'Koch', 'O' => 'Porphyry',
-    'R' => 'Regiomontanus', 'C' => 'Campanus', 'E' => 'Equal',
-    'V' => 'Whole Sign', 'W' => 'Whole Sign', 'B' => 'Alcabitius',
-    'M' => 'Morinus'
+    'R' => 'Regiomontanus', 'C' => 'Campanus', 'A' => 'Equal',
+    'E' => 'Equal', 'V' => 'Whole Sign', 'W' => 'Whole Sign',
+    'N' => 'Whole Sign', 'B' => 'Alcabitius', 'M' => 'Morinus'
 ];
 $house_system_name = $houseSystemMap[$house_system] ?? 'Placidus';
 
-// Extract Ascendant and Midheaven from house cusps
 $ascendant = null;
 $midheaven = null;
 
@@ -320,22 +277,21 @@ if (isset($houseCusps['success']) && $houseCusps['success'] == 1 && isset($house
     foreach ($houseCusps['data']['houses'] as $house) {
         if ($house['house'] == 1) {
             $ascendant = [
-                'sign' => getSignFromDegree($house['full_degree']),
-                'degree' => getDegreeInSign($house['full_degree']),
-                'dms' => decimalToDMS($house['full_degree'])
+                'sign' => getSignFromDegree((float)$house['full_degree']),
+                'degree' => round(getDegreeInSign((float)$house['full_degree']), 6),
+                'dms' => decimalToDMS((float)$house['full_degree'])
             ];
         }
         if ($house['house'] == 10) {
             $midheaven = [
-                'sign' => getSignFromDegree($house['full_degree']),
-                'degree' => getDegreeInSign($house['full_degree']),
-                'dms' => decimalToDMS($house['full_degree'])
+                'sign' => getSignFromDegree((float)$house['full_degree']),
+                'degree' => round(getDegreeInSign((float)$house['full_degree']), 6),
+                'dms' => decimalToDMS((float)$house['full_degree'])
             ];
         }
     }
 }
 
-// Extract planets with correct houses
 $planets = [];
 $planetNameMap = [
     'Sun' => 'Sun', 'Moon' => 'Moon', 'Mercury' => 'Mercury',
@@ -345,36 +301,17 @@ $planetNameMap = [
     'North node' => 'North Node', 'South node' => 'South Node'
 ];
 
-// First, get house cusps as reference if planetary positions don't have house info
-$houseCuspsReference = null;
-if (isset($houseCusps['success']) && $houseCusps['success'] == 1 && isset($houseCusps['data']['houses'])) {
-    $houseCuspsReference = $houseCusps;
-}
-
 if (isset($planetaryPositions['success']) && $planetaryPositions['success'] == 1 && isset($planetaryPositions['data'])) {
     foreach ($planetaryPositions['data'] as $planet) {
         $planetName = $planet['name'];
         
-        // Skip Ascendant, MC for planets list
         if (in_array($planetName, ['Ascendant', 'MC', 'Part of fortune'])) {
             continue;
         }
         
         $displayName = $planetNameMap[$planetName] ?? $planetName;
-        $fullDegree = $planet['full_degree'];
-        
-        // Get house number - use pre-calculated house from API if available
-        $houseNumber = null;
-        
-        // Method 1: Check if API provided house directly (in full_degree field format)
-        if (isset($planet['house']) && $planet['house'] > 0) {
-            $houseNumber = $planet['house'];
-        }
-        
-        // Method 2: Calculate from house cusps
-        if ($houseNumber === null && $houseCuspsReference) {
-            $houseNumber = getHouseNumber($fullDegree, $houseCuspsReference);
-        }
+        $fullDegree = (float)$planet['full_degree'];
+        $houseNumber = isset($planet['house']) && $planet['house'] > 0 ? (int)$planet['house'] : null;
         
         $planets[] = [
             'planet' => $displayName,
@@ -386,12 +323,10 @@ if (isset($planetaryPositions['success']) && $planetaryPositions['success'] == 1
     }
 }
 
-// Sort planets by house number
 usort($planets, function($a, $b) {
     return ($a['house'] ?? 99) - ($b['house'] ?? 99);
 });
 
-// Extract aspects
 $aspects = [];
 if (isset($aspectTable['status']) && $aspectTable['status'] == 'success' && isset($aspectTable['data'])) {
     foreach ($aspectTable['data'] as $aspect) {
@@ -399,7 +334,7 @@ if (isset($aspectTable['status']) && $aspectTable['status'] == 'success' && isse
             'point_a' => $aspect['planetOne'],
             'aspect_type' => strtolower($aspect['aspect']),
             'point_b' => $aspect['planetTwo'],
-            'orb' => round($aspect['orb'], 2),
+            'orb' => round((float)$aspect['orb'], 2),
             'motion' => 'separating'
         ];
     }
@@ -407,7 +342,7 @@ if (isset($aspectTable['status']) && $aspectTable['status'] == 'success' && isse
 
 /*
 |--------------------------------------------------------------------------
-| STEP 9: FORMAT HUMAN DESIGN DATA
+| STEP 9: FORMAT HUMAN DESIGN DATA - FIXED PARSING
 |--------------------------------------------------------------------------
 */
 function formatHumanDesignData($hdData) {
@@ -435,55 +370,124 @@ function formatHumanDesignData($hdData) {
         return $formatted;
     }
     
+    // Parse Properties from BodyGraph response
     if (isset($hdData['Properties'])) {
         $props = $hdData['Properties'];
-        $formatted['type'] = $props['Type']['option'] ?? '';
-        $formatted['strategy'] = $props['Strategy']['option'] ?? '';
-        $formatted['authority'] = $props['InnerAuthority']['option'] ?? '';
-        $formatted['profile'] = $props['Profile']['option'] ?? '';
-        $formatted['definition'] = $props['Definition']['option'] ?? '';
-        $formatted['incarnation_cross'] = $props['IncarnationCross']['option'] ?? '';
-    }
-    
-    if (isset($hdData['DefinedCenters'])) {
-        $formatted['centers']['defined'] = $hdData['DefinedCenters'];
-    }
-    
-    if (isset($hdData['OpenCenters'])) {
-        $formatted['centers']['open'] = $hdData['OpenCenters'];
-    }
-    
-    if (isset($hdData['Channels'])) {
-        $formatted['channels'] = $hdData['Channels'];
-    }
-    
-    if (isset($hdData['Gates'])) {
-        foreach ($hdData['Gates'] as $gate) {
-            if (is_numeric($gate)) {
-                $formatted['gates'][] = (int)$gate;
+        
+        // Type
+        if (isset($props['Type'])) {
+            if (is_array($props['Type'])) {
+                $formatted['type'] = $props['Type']['option'] ?? $props['Type']['name'] ?? '';
+            } else {
+                $formatted['type'] = $props['Type'];
+            }
+        }
+        
+        // Strategy
+        if (isset($props['Strategy'])) {
+            if (is_array($props['Strategy'])) {
+                $formatted['strategy'] = $props['Strategy']['option'] ?? $props['Strategy']['name'] ?? '';
+            } else {
+                $formatted['strategy'] = $props['Strategy'];
+            }
+        }
+        
+        // Authority
+        if (isset($props['InnerAuthority'])) {
+            if (is_array($props['InnerAuthority'])) {
+                $formatted['authority'] = $props['InnerAuthority']['option'] ?? $props['InnerAuthority']['name'] ?? '';
+            } else {
+                $formatted['authority'] = $props['InnerAuthority'];
+            }
+        }
+        
+        // Profile
+        if (isset($props['Profile'])) {
+            if (is_array($props['Profile'])) {
+                $formatted['profile'] = $props['Profile']['option'] ?? $props['Profile']['name'] ?? '';
+            } else {
+                $formatted['profile'] = $props['Profile'];
+            }
+        }
+        
+        // Definition
+        if (isset($props['Definition'])) {
+            if (is_array($props['Definition'])) {
+                $formatted['definition'] = $props['Definition']['option'] ?? $props['Definition']['name'] ?? '';
+            } else {
+                $formatted['definition'] = $props['Definition'];
+            }
+        }
+        
+        // Incarnation Cross
+        if (isset($props['IncarnationCross'])) {
+            if (is_array($props['IncarnationCross'])) {
+                $formatted['incarnation_cross'] = $props['IncarnationCross']['option'] ?? $props['IncarnationCross']['name'] ?? '';
+            } else {
+                $formatted['incarnation_cross'] = $props['IncarnationCross'];
             }
         }
     }
     
-    if (isset($hdData['Personality'])) {
-        if (isset($hdData['Personality']['Sun'])) {
-            $formatted['personality']['sun']['gate'] = (int)($hdData['Personality']['Sun']['Gate'] ?? 0);
-            $formatted['personality']['sun']['line'] = (int)($hdData['Personality']['Sun']['Line'] ?? 0);
-        }
-        if (isset($hdData['Personality']['Earth'])) {
-            $formatted['personality']['earth']['gate'] = (int)($hdData['Personality']['Earth']['Gate'] ?? 0);
-            $formatted['personality']['earth']['line'] = (int)($hdData['Personality']['Earth']['Line'] ?? 0);
+    // Parse Defined Centers
+    if (isset($hdData['DefinedCenters'])) {
+        if (is_array($hdData['DefinedCenters'])) {
+            $formatted['centers']['defined'] = $hdData['DefinedCenters'];
         }
     }
     
+    // Parse Open Centers
+    if (isset($hdData['OpenCenters'])) {
+        if (is_array($hdData['OpenCenters'])) {
+            $formatted['centers']['open'] = $hdData['OpenCenters'];
+        }
+    }
+    
+    // Parse Channels
+    if (isset($hdData['Channels'])) {
+        if (is_array($hdData['Channels'])) {
+            $formatted['channels'] = $hdData['Channels'];
+        }
+    }
+    
+    // Parse Gates
+    if (isset($hdData['Gates'])) {
+        if (is_array($hdData['Gates'])) {
+            foreach ($hdData['Gates'] as $gate) {
+                if (is_numeric($gate)) {
+                    $formatted['gates'][] = (int)$gate;
+                } elseif (is_array($gate) && isset($gate['id'])) {
+                    $formatted['gates'][] = (int)$gate['id'];
+                }
+            }
+        }
+    }
+    
+    // Parse Personality Sun & Earth
+    if (isset($hdData['Personality'])) {
+        if (isset($hdData['Personality']['Sun'])) {
+            $sun = $hdData['Personality']['Sun'];
+            $formatted['personality']['sun']['gate'] = (int)($sun['Gate'] ?? $sun['gate'] ?? 0);
+            $formatted['personality']['sun']['line'] = (int)($sun['Line'] ?? $sun['line'] ?? 0);
+        }
+        if (isset($hdData['Personality']['Earth'])) {
+            $earth = $hdData['Personality']['Earth'];
+            $formatted['personality']['earth']['gate'] = (int)($earth['Gate'] ?? $earth['gate'] ?? 0);
+            $formatted['personality']['earth']['line'] = (int)($earth['Line'] ?? $earth['line'] ?? 0);
+        }
+    }
+    
+    // Parse Design Sun & Earth
     if (isset($hdData['Design'])) {
         if (isset($hdData['Design']['Sun'])) {
-            $formatted['design']['sun']['gate'] = (int)($hdData['Design']['Sun']['Gate'] ?? 0);
-            $formatted['design']['sun']['line'] = (int)($hdData['Design']['Sun']['Line'] ?? 0);
+            $sun = $hdData['Design']['Sun'];
+            $formatted['design']['sun']['gate'] = (int)($sun['Gate'] ?? $sun['gate'] ?? 0);
+            $formatted['design']['sun']['line'] = (int)($sun['Line'] ?? $sun['line'] ?? 0);
         }
         if (isset($hdData['Design']['Earth'])) {
-            $formatted['design']['earth']['gate'] = (int)($hdData['Design']['Earth']['Gate'] ?? 0);
-            $formatted['design']['earth']['line'] = (int)($hdData['Design']['Earth']['Line'] ?? 0);
+            $earth = $hdData['Design']['Earth'];
+            $formatted['design']['earth']['gate'] = (int)($earth['Gate'] ?? $earth['gate'] ?? 0);
+            $formatted['design']['earth']['line'] = (int)($earth['Line'] ?? $earth['line'] ?? 0);
         }
     }
     
@@ -500,7 +504,8 @@ $formattedHD = formatHumanDesignData($hd_response);
 $result = [
     'astrology' => [
         'house_system' => [
-            'name' => $house_system_name
+            'name' => $house_system_name,
+            'code' => $house_system
         ],
         'ascendant' => $ascendant,
         'midheaven' => $midheaven,
