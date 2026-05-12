@@ -59,6 +59,17 @@ header('X-Content-Type-Options: nosniff');
 header('X-Frame-Options: SAMEORIGIN');
 header('Referrer-Policy: no-referrer-when-downgrade');
 
+register_shutdown_function(function () {
+    $error = error_get_last();
+
+    if ($error !== null) {
+        if (!headers_sent()) {
+            http_response_code(500);
+        }
+
+        error_log(json_encode($error)); // log only
+    }
+});
 /*
 |--------------------------------------------------------------------------
 | INPUT
@@ -807,12 +818,6 @@ if ($debug) {
             ];
         }
     }
-}
-
-$json = json_encode($result, JSON_UNESCAPED_UNICODE);
-
-if (strlen($json) > 900000) {
-    $result['warning'] = "Response trimmed for mobile stability";
 }
 ob_end_clean();
 echo json_encode($result, JSON_UNESCAPED_UNICODE);
