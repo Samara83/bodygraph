@@ -339,7 +339,7 @@ function getHouseNumberFromDegree($degree, $houseCuspsData) {
     $normalizedDegree = fmod($degree, 360);
     if ($normalizedDegree < 0) $normalizedDegree += 360;
     
-    $houses = $houseCuspsData['data']['houses'];
+    $houses = $houseCuspsData['data']['houses'] ?? [];
     
     // Get all cusp degrees and sort them
     $cuspDegrees = [];
@@ -490,7 +490,7 @@ $ascendant = null;
 $midheaven = null;
 $ascLongitude = 0;
 
-if (isset($houseCusps['success']) && $houseCusps['success'] == 1 && isset($houseCusps['data']['houses'])) {
+if (isset($houseCusps['status'] ?? '') === 'success' && isset($houseCusps['data']['houses'])) {
     foreach ($houseCusps['data']['houses'] as $house) {
         if ($house['house'] == 1) {
             $ascLongitude = (float)$house['full_degree'];
@@ -544,7 +544,7 @@ $planets = [];
 $sunLongitude = null;
 $moonLongitude = null;
 
-if (isset($planetaryPositions['success']) && $planetaryPositions['success'] == 1 && isset($planetaryPositions['data'])) {
+if (isset($planetaryPositions['status'] ?? '') === 'success' && isset($planetaryPositions['data'])) {
     foreach ($planetaryPositions['data'] as $planet) {
         $planetName = $planet['name'];
         
@@ -639,7 +639,7 @@ usort($planets, function($a, $b) {
 
 // Extract aspects
 $aspects = [];
-if (isset($aspectTable['status']) && $aspectTable['status'] == 'success' && isset($aspectTable['data'])) {
+if (isset($aspectTable['status'] ?? '') === 'success' && isset($aspectTable['data'])) {
     foreach ($aspectTable['data'] as $aspect) {
         $aspects[] = [
             'point_a' => $aspect['planetOne'],
