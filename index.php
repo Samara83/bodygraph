@@ -1,5 +1,94 @@
 <?php
-header('Content-Type: application/json');
+/*
+|--------------------------------------------------------------------------
+| IOS + OPENAI + RAILWAY STABILITY FIX
+|--------------------------------------------------------------------------
+*/
+
+ini_set('display_errors', 0);
+ini_set('log_errors', 1);
+
+ini_set('max_execution_time', 120);
+ini_set('default_socket_timeout', 120);
+ini_set('memory_limit', '512M');
+
+set_time_limit(120);
+
+ignore_user_abort(true);
+
+/*
+|--------------------------------------------------------------------------
+| JSON RESPONSE
+|--------------------------------------------------------------------------
+*/
+
+header('Content-Type: application/json; charset=utf-8');
+
+/*
+|--------------------------------------------------------------------------
+| CORS FIXES
+|--------------------------------------------------------------------------
+*/
+
+header('Access-Control-Allow-Origin: *');
+header('Access-Control-Allow-Methods: GET, POST, OPTIONS');
+header('Access-Control-Allow-Headers: Content-Type, Authorization');
+header('Access-Control-Max-Age: 86400');
+
+/*
+|--------------------------------------------------------------------------
+| IOS / SAFARI / OPENAI FIXES
+|--------------------------------------------------------------------------
+*/
+
+header('Cache-Control: no-cache, no-store, must-revalidate');
+header('Pragma: no-cache');
+header('Expires: 0');
+
+header('Connection: keep-alive');
+header('Keep-Alive: timeout=120, max=1000');
+
+/*
+|--------------------------------------------------------------------------
+| SECURITY HEADERS
+|--------------------------------------------------------------------------
+*/
+
+header('X-Content-Type-Options: nosniff');
+header('X-Frame-Options: SAMEORIGIN');
+header('Referrer-Policy: no-referrer-when-downgrade');
+
+/*
+|--------------------------------------------------------------------------
+| HANDLE PREFLIGHT REQUESTS
+|--------------------------------------------------------------------------
+*/
+
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+    http_response_code(200);
+    exit();
+}
+
+/*
+|--------------------------------------------------------------------------
+| GLOBAL ERROR HANDLER
+|--------------------------------------------------------------------------
+*/
+
+register_shutdown_function(function () {
+    $error = error_get_last();
+
+    if ($error !== null) {
+        if (!headers_sent()) {
+            http_response_code(500);
+        }
+
+        echo json_encode([
+            "success" => false,
+            "message" => "Internal Server Error"
+        ]);
+    }
+});
 
 /*
 |--------------------------------------------------------------------------
@@ -52,10 +141,14 @@ function makeRequest($url, $method = 'GET', $postData = null, $bearerToken = nul
     $options = [
         CURLOPT_URL => $url,
         CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT => 30,
+        CURLOPT_TIMEOUT => 90,
+        CURLOPT_CONNECTTIMEOUT => 30,
+        CURLOPT_TCP_KEEPALIVE => 1,
+        CURLOPT_TCP_KEEPIDLE => 30,
+        CURLOPT_TCP_KEEPINTVL => 15,
         CURLOPT_FOLLOWLOCATION => true,
-        CURLOPT_SSL_VERIFYPEER => false,
-        CURLOPT_SSL_VERIFYHOST => false,
+        CURLOPT_SSL_VERIFYPEER => true,
+        CURLOPT_SSL_VERIFYHOST => 2,
         CURLOPT_HTTPHEADER => $headers,
     ];
     
