@@ -1,4 +1,5 @@
 <?php
+ob_start();
 /*
 |--------------------------------------------------------------------------
 | IOS + OPENAI + RAILWAY STABILITY FIX
@@ -60,38 +61,6 @@ header('Referrer-Policy: no-referrer-when-downgrade');
 
 /*
 |--------------------------------------------------------------------------
-| HANDLE PREFLIGHT REQUESTS
-|--------------------------------------------------------------------------
-*/
-
-if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-    http_response_code(200);
-    exit();
-}
-
-/*
-|--------------------------------------------------------------------------
-| GLOBAL ERROR HANDLER
-|--------------------------------------------------------------------------
-*/
-
-register_shutdown_function(function () {
-    $error = error_get_last();
-
-    if ($error !== null) {
-        if (!headers_sent()) {
-            http_response_code(500);
-        }
-
-        echo json_encode([
-            "success" => false,
-            "message" => "Internal Server Error"
-        ]);
-    }
-});
-
-/*
-|--------------------------------------------------------------------------
 | INPUT
 |--------------------------------------------------------------------------
 */
@@ -132,43 +101,37 @@ $google_api_key = 'AIzaSyBH5t_bIpTznpCj-zYUU1klq3n9ZhG_FR8';
 */
 function makeRequest($url, $method = 'GET', $postData = null, $bearerToken = null) {
     $ch = curl_init();
-    
+
     $headers = ['Accept: application/json'];
+
     if ($bearerToken) {
         $headers[] = "Authorization: Bearer $bearerToken";
     }
-    
-    $options = [
+
+    curl_setopt_array($ch, [
         CURLOPT_URL => $url,
         CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT => 90,
-        CURLOPT_CONNECTTIMEOUT => 30,
-        CURLOPT_TCP_KEEPALIVE => 1,
-        CURLOPT_TCP_KEEPIDLE => 30,
-        CURLOPT_TCP_KEEPINTVL => 15,
+        CURLOPT_TIMEOUT => 40,
+        CURLOPT_CONNECTTIMEOUT => 20,
         CURLOPT_FOLLOWLOCATION => true,
         CURLOPT_SSL_VERIFYPEER => true,
         CURLOPT_SSL_VERIFYHOST => 2,
         CURLOPT_HTTPHEADER => $headers,
-    ];
-    
-    if ($method === 'POST') {
-        $options[CURLOPT_POST] = true;
-        if ($postData) {
-            $options[CURLOPT_POSTFIELDS] = http_build_query($postData);
-        }
-    }
-    
-    curl_setopt_array($ch, $options);
+    ]);
+
     $response = curl_exec($ch);
     $error = curl_error($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+
     curl_close($ch);
-    
-    if ($error) {
-        return ['error' => $error];
+
+    if ($error || $httpCode >= 400) {
+        return null; // IMPORTANT: fail safe
     }
-    
-    return json_decode($response, true);
+
+    $decoded = json_decode($response, true);
+
+    return $decoded ?: null;
 }
 
 /*
@@ -846,5 +809,12 @@ if ($debug) {
     }
 }
 
-echo json_encode($result, JSON_PRETTY_PRINT);
+$json = json_encode($result, JSON_UNESCAPED_UNICODE);
+
+if (strlen($json) > 900000) {
+    $result['warning'] = "Response trimmed for mobile stability";
+}
+ob_end_clean();
+echo json_encode($result, JSON_UNESCAPED_UNICODE);
+exit;
 ?>
