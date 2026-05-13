@@ -1,114 +1,29 @@
 <?php
-/*
-|--------------------------------------------------------------------------
-| IOS + OPENAI + RAILWAY STABILITY FIX - FINAL VERSION
-|--------------------------------------------------------------------------
-*/
-
-// Clear any existing output buffers
-while (ob_get_level()) {
-    ob_end_clean();
-}
-
-// Set error reporting for production
-ini_set('display_errors', 0);
-ini_set('log_errors', 1);
-error_reporting(E_ALL);
-
-// Extended timeouts for mobile/streaming
-ini_set('max_execution_time', 300);
-ini_set('default_socket_timeout', 300);
-ini_set('memory_limit', '512M');
-set_time_limit(300);
-
-// Disable ignore_user_abort for better mobile handling
-ignore_user_abort(false);
-
-// Flush immediately
-ob_implicit_flush(true);
+header('Content-Type: application/json');
 
 /*
 |--------------------------------------------------------------------------
-| HEADERS - OPTIMIZED FOR MOBILE/STREAMING
+| INPUT
 |--------------------------------------------------------------------------
 */
-
-// Clear existing headers
-header_remove();
-
-// JSON Response
-header('Content-Type: application/json; charset=utf-8');
-
-// CORS Headers
-header('Access-Control-Allow-Origin: *');
-header('Access-Control-Allow-Methods: GET, POST, OPTIONS');
-header('Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With');
-header('Access-Control-Max-Age: 86400');
-header('Access-Control-Allow-Credentials: true');
-
-// Handle preflight OPTIONS request
-if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-    http_response_code(200);
-    exit();
-}
-
-// Mobile/Safari specific headers
-header('Cache-Control: no-cache, no-store, must-revalidate');
-header('Pragma: no-cache');
-header('Expires: 0');
-header('Connection: close');
-
-// Disable buffering for streaming
-header('X-Accel-Buffering: no');
-header('X-Content-Type-Options: nosniff');
-header('X-Frame-Options: SAMEORIGIN');
-header('Referrer-Policy: no-referrer-when-downgrade');
-
-/*
-|--------------------------------------------------------------------------
-| INPUT VALIDATION
-|--------------------------------------------------------------------------
-*/
-
 $location = trim($_GET['location'] ?? '');
-if (empty($location)) {
-    http_response_code(400);
-    echo json_encode(['error' => 'Location is required'], JSON_PRETTY_PRINT);
-    exit;
-}
-
 $parts = array_map('trim', explode(',', $location));
 $state = $parts[1] ?? $parts[0] ?? '';
 
-$year = isset($_GET['year']) ? filter_var($_GET['year'], FILTER_VALIDATE_INT) : null;
-$month = isset($_GET['month']) ? filter_var($_GET['month'], FILTER_VALIDATE_INT) : null;
-$day = isset($_GET['day']) ? filter_var($_GET['day'], FILTER_VALIDATE_INT) : null;
-$hour = isset($_GET['hour']) ? filter_var($_GET['hour'], FILTER_VALIDATE_INT) : 12;
-$minutes = isset($_GET['minutes']) ? filter_var($_GET['minutes'], FILTER_VALIDATE_INT) : 0;
+$year     = $_GET['year'] ?? '';
+$month    = $_GET['month'] ?? '';
+$day      = $_GET['day'] ?? '';
+$hour     = $_GET['hour'] ?? '';
+$minutes  = $_GET['minutes'] ?? '';
 $house_system = $_GET['house_system'] ?? 'P';
 $full_name = $_GET['full_name'] ?? 'User';
 $gender = $_GET['gender'] ?? 'male';
 $language = $_GET['language'] ?? 'en';
-$debug = filter_var($_GET['debug'] ?? false, FILTER_VALIDATE_BOOLEAN);
+$debug = $_GET['debug'] ?? false;
 
-// Validate required fields
 if (!$state || !$year || !$month || !$day) {
-    http_response_code(400);
-    echo json_encode(['error' => 'Required fields missing: state, year, month, day are required'], JSON_PRETTY_PRINT);
+    echo json_encode(['error' => 'Required fields missing'], JSON_PRETTY_PRINT);
     exit;
-}
-
-// Validate date ranges
-if ($year < 1900 || $year > 2100 || $month < 1 || $month > 12 || $day < 1 || $day > 31) {
-    http_response_code(400);
-    echo json_encode(['error' => 'Invalid date provided'], JSON_PRETTY_PRINT);
-    exit;
-}
-
-// Validate house system
-$validHouseSystems = ['P', 'K', 'O', 'R', 'C', 'A', 'E', 'V', 'W', 'N', 'B', 'M'];
-if (!in_array($house_system, $validHouseSystems)) {
-    $house_system = 'P';
 }
 
 /*
@@ -123,84 +38,63 @@ $google_api_key = 'AIzaSyBH5t_bIpTznpCj-zYUU1klq3n9ZhG_FR8';
 
 /*
 |--------------------------------------------------------------------------
-| FUNCTION: IMPROVED CURL WITH RETRY LOGIC
+| FUNCTION: CURL REQUEST
 |--------------------------------------------------------------------------
 */
-function makeRequest($url, $method = 'GET', $postData = null, $bearerToken = null, $maxRetries = 2) {
-    $retryCount = 0;
-    $lastError = null;
+function makeRequest($url, $method = 'GET', $postData = null, $bearerToken = null) {
+    $ch = curl_init();
     
-    while ($retryCount <= $maxRetries) {
-        $ch = curl_init();
-        
-        $headers = ['Accept: application/json', 'User-Agent: AstroAPI/1.0'];
-        if ($bearerToken) {
-            $headers[] = "Authorization: Bearer $bearerToken";
-        }
-        
-        $options = [
-            CURLOPT_URL => $url,
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_TIMEOUT => 60,
-            CURLOPT_CONNECTTIMEOUT => 20,
-            CURLOPT_FOLLOWLOCATION => true,
-            CURLOPT_SSL_VERIFYPEER => false,
-            CURLOPT_SSL_VERIFYHOST => false,
-            CURLOPT_HTTPHEADER => $headers,
-            CURLOPT_ENCODING => '',
-            CURLOPT_TCP_KEEPALIVE => 1,
-            CURLOPT_TCP_KEEPIDLE => 30,
-        ];
-        
-        if ($method === 'POST') {
-            $options[CURLOPT_POST] = true;
-            if ($postData) {
-                $options[CURLOPT_POSTFIELDS] = http_build_query($postData);
-            }
-        }
-        
-        curl_setopt_array($ch, $options);
-        $response = curl_exec($ch);
-        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        $error = curl_error($ch);
-        curl_close($ch);
-        
-        if (!$error && $httpCode === 200) {
-            $decoded = json_decode($response, true);
-            if ($decoded !== null) {
-                return $decoded;
-            }
-        }
-        
-        $lastError = $error ?: "HTTP $httpCode";
-        $retryCount++;
-        
-        if ($retryCount <= $maxRetries) {
-            usleep(500000); // 0.5 second delay before retry
+    $headers = ['Accept: application/json'];
+    if ($bearerToken) {
+        $headers[] = "Authorization: Bearer $bearerToken";
+    }
+    
+    $options = [
+        CURLOPT_URL => $url,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => 30,
+        CURLOPT_FOLLOWLOCATION => true,
+        CURLOPT_SSL_VERIFYPEER => false,
+        CURLOPT_SSL_VERIFYHOST => false,
+        CURLOPT_HTTPHEADER => $headers,
+    ];
+    
+    if ($method === 'POST') {
+        $options[CURLOPT_POST] = true;
+        if ($postData) {
+            $options[CURLOPT_POSTFIELDS] = http_build_query($postData);
         }
     }
     
-    return ['error' => $lastError ?: 'Request failed after ' . ($maxRetries + 1) . ' attempts'];
+    curl_setopt_array($ch, $options);
+    $response = curl_exec($ch);
+    $error = curl_error($ch);
+    curl_close($ch);
+    
+    if ($error) {
+        return ['error' => $error];
+    }
+    
+    return json_decode($response, true);
 }
 
 /*
 |--------------------------------------------------------------------------
-| STEP 1: GOOGLE MAPS GEOCODING
+| STEP 1: GOOGLE MAPS GEOCODING (LAT / LNG)
 |--------------------------------------------------------------------------
 */
 $geocode_url = "https://maps.googleapis.com/maps/api/geocode/json?address=" . urlencode($location) . "&key={$google_api_key}";
 $geoData = makeRequest($geocode_url);
 
 if (empty($geoData['results'][0])) {
-    http_response_code(404);
-    echo json_encode(['error' => 'Location not found. Please check the location name.'], JSON_PRETTY_PRINT);
+    echo json_encode(['error' => 'Google Geocoding failed'], JSON_PRETTY_PRINT);
     exit;
 }
 
 $latitude = $geoData['results'][0]['geometry']['location']['lat'];
 $longitude = $geoData['results'][0]['geometry']['location']['lng'];
 
-// Extract city name
+// Extract city
 $city = '';
 foreach ($geoData['results'][0]['address_components'] as $component) {
     if (in_array('locality', $component['types'])) {
@@ -222,18 +116,14 @@ if (empty($city)) {
 
 /*
 |--------------------------------------------------------------------------
-| STEP 2: TIMEZONE DETECTION
+| STEP 2: GET ACCURATE TIMEZONE
 |--------------------------------------------------------------------------
 */
 $timestamp = strtotime("$year-$month-$day $hour:$minutes:00");
-if ($timestamp === false || $timestamp <= 0) {
-    $timestamp = time();
-}
-
 $timezone_url = "https://maps.googleapis.com/maps/api/timezone/json?location={$latitude},{$longitude}&timestamp={$timestamp}&key={$google_api_key}";
 $tzData = makeRequest($timezone_url);
 
-$timezone = $tzData['timeZoneId'] ?? 'UTC';
+$timezone = $tzData['timeZoneId'] ?? 'Europe/London';
 $rawOffset = $tzData['rawOffset'] ?? 0;
 $dstOffset = $tzData['dstOffset'] ?? 0;
 $tzone = ($rawOffset + $dstOffset) / 3600;
@@ -251,33 +141,27 @@ $birth_date_time = "$year-$month-$day $birth_time";
 
 /*
 |--------------------------------------------------------------------------
-| STEP 4: HUMAN DESIGN API (with fallback)
+| STEP 4: BODYGRAPH HD API (HUMAN DESIGN)
 |--------------------------------------------------------------------------
 */
-$hd_response = ['error' => 'Service temporarily unavailable'];
+$bg_url = "https://api.bodygraphchart.com/v210502/locations?api_key={$bg_api_key}&query=" . urlencode($city ?: $state);
+$bgData = makeRequest($bg_url);
 
-try {
-    $bg_url = "https://api.bodygraphchart.com/v210502/locations?api_key={$bg_api_key}&query=" . urlencode($city ?: $state);
-    $bgData = makeRequest($bg_url);
-    
-    $bgTimezone = $timezone;
-    if (!empty($bgData) && !isset($bgData['error']) && isset($bgData[0]['timezone'])) {
-        $bgTimezone = $bgData[0]['timezone'];
-    }
-    
-    $hd_url = 'https://api.bodygraphchart.com/v221006/hd-data?api_key='
-        . urlencode($bg_api_key)
-        . '&date=' . urlencode($birth_date_time)
-        . '&timezone=' . urlencode($bgTimezone);
-    
-    $hd_response = makeRequest($hd_url);
-} catch (Exception $e) {
-    // Keep default error response
+$bgTimezone = $timezone;
+if (!empty($bgData) && !isset($bgData['error']) && isset($bgData[0]['timezone'])) {
+    $bgTimezone = $bgData[0]['timezone'];
 }
+
+$hd_url = 'https://api.bodygraphchart.com/v221006/hd-data?api_key='
+    . urlencode($bg_api_key)
+    . '&date=' . urlencode($birth_date_time)
+    . '&timezone=' . urlencode($bgTimezone);
+
+$hd_response = makeRequest($hd_url);
 
 /*
 |--------------------------------------------------------------------------
-| STEP 5: DIVINE API PARAMS
+| STEP 5: DIVINE API BASE PARAMS
 |--------------------------------------------------------------------------
 */
 $divineParams = [
@@ -301,7 +185,7 @@ $divineParams = [
 
 /*
 |--------------------------------------------------------------------------
-| STEP 6: EXECUTE DIVINE API REQUESTS
+| STEP 6: DIVINE API REQUESTS
 |--------------------------------------------------------------------------
 */
 
@@ -314,7 +198,7 @@ $houseCusps = makeRequest(
     $divine_bearer_token
 );
 
-// Planetary Positions
+// Planetary Positions - Extended for all bodies
 $extendedParams = array_merge($divineParams, [
     'with_house' => 1,
     'with_retrograde' => 1,
@@ -339,14 +223,6 @@ $aspectTable = makeRequest(
     $aspectParams,
     $divine_bearer_token
 );
-
-// Check if critical data is available
-if ((empty($houseCusps['success']) || $houseCusps['success'] != 1) && 
-    (empty($planetaryPositions['success']) || $planetaryPositions['success'] != 1)) {
-    http_response_code(503);
-    echo json_encode(['error' => 'Astrology service temporarily unavailable. Please try again later.'], JSON_PRETTY_PRINT);
-    exit;
-}
 
 /*
 |--------------------------------------------------------------------------
@@ -387,6 +263,7 @@ function getSignFromDegree($fullDegree) {
     return $signs[$signIndex % 12];
 }
 
+// FIXED: Correct house calculation with proper wrap-around handling
 function getHouseNumberFromDegree($degree, $houseCuspsData) {
     if (!$houseCuspsData || !isset($houseCuspsData['data']['houses'])) {
         return null;
@@ -397,6 +274,7 @@ function getHouseNumberFromDegree($degree, $houseCuspsData) {
     
     $houses = $houseCuspsData['data']['houses'];
     
+    // Get all cusp degrees and sort them
     $cuspDegrees = [];
     foreach ($houses as $house) {
         $cuspDegree = fmod((float)$house['full_degree'], 360);
@@ -407,15 +285,17 @@ function getHouseNumberFromDegree($degree, $houseCuspsData) {
         ];
     }
     
+    // Sort by degree
     usort($cuspDegrees, function($a, $b) {
         return $a['degree'] - $b['degree'];
     });
     
+    // Find which house the degree falls into
     for ($i = 0; $i < count($cuspDegrees); $i++) {
         $start = $cuspDegrees[$i]['degree'];
         $end = $cuspDegrees[($i + 1) % count($cuspDegrees)]['degree'];
         
-        if ($start > $end) {
+        if ($start > $end) { // Wrap-around case (crossing 0°)
             if ($normalizedDegree >= $start || $normalizedDegree < $end) {
                 return $cuspDegrees[$i]['house'];
             }
@@ -429,6 +309,7 @@ function getHouseNumberFromDegree($degree, $houseCuspsData) {
     return null;
 }
 
+// NEW: Handle cusp boundaries with tolerance
 function getAccurateHouseWithCuspTolerance($degree, $houseCuspsData, $tolerance = 1.2) {
     if (!$houseCuspsData || !isset($houseCuspsData['data']['houses'])) {
         return null;
@@ -439,6 +320,7 @@ function getAccurateHouseWithCuspTolerance($degree, $houseCuspsData, $tolerance 
     
     $houses = $houseCuspsData['data']['houses'];
     
+    // First check if planet is within tolerance of any cusp
     foreach ($houses as $house) {
         $cuspDegree = fmod((float)$house['full_degree'], 360);
         if ($cuspDegree < 0) $cuspDegree += 360;
@@ -449,10 +331,12 @@ function getAccurateHouseWithCuspTolerance($degree, $houseCuspsData, $tolerance 
         );
         
         if ($diff <= $tolerance) {
+            // Planet is within tolerance of a cusp - assign to next house
             return ($house['house'] % 12) + 1;
         }
     }
     
+    // Otherwise use standard calculation
     return getHouseNumberFromDegree($degree, $houseCuspsData);
 }
 
@@ -486,13 +370,28 @@ function findNearestCusp($degree, $houseCuspsData) {
     return $nearest;
 }
 
+/*
+|--------------------------------------------------------------------------
+| STEP 8: CHECK IF DAY OR NIGHT CHART
+|--------------------------------------------------------------------------
+*/
 function isDayChart($sunLongitude, $ascLongitude) {
+    // Calculate Sun's house position
     $sunRelative = fmod(($sunLongitude - $ascLongitude + 360), 360);
     $sunHouse = floor($sunRelative / 30);
+    // Houses 7-12 (index 6-11) are above horizon (day chart)
     return ($sunHouse >= 6);
 }
 
+/*
+|--------------------------------------------------------------------------
+| STEP 9: CALCULATE PART OF FORTUNE
+|--------------------------------------------------------------------------
+*/
 function calculatePartOfFortune($sunLong, $moonLong, $ascLong, $isDayChart) {
+    // Day chart (Sun above horizon): Fortune = Asc + Moon - Sun
+    // Night chart (Sun below horizon): Fortune = Asc + Sun - Moon
+    
     if ($isDayChart) {
         $pof = $ascLong + $moonLong - $sunLong;
     } else {
@@ -505,95 +404,9 @@ function calculatePartOfFortune($sunLong, $moonLong, $ascLong, $isDayChart) {
     return $pof;
 }
 
-function formatHumanDesignData($hdData) {
-    $formatted = [
-        'type' => '',
-        'strategy' => '',
-        'authority' => '',
-        'profile' => '',
-        'definition' => '',
-        'incarnation_cross' => '',
-        'centers' => ['defined' => [], 'open' => []],
-        'channels' => [],
-        'gates' => [],
-        'personality' => [
-            'sun' => ['gate' => 0, 'line' => 0],
-            'earth' => ['gate' => 0, 'line' => 0]
-        ],
-        'design' => [
-            'sun' => ['gate' => 0, 'line' => 0],
-            'earth' => ['gate' => 0, 'line' => 0]
-        ]
-    ];
-    
-    if (!$hdData || isset($hdData['error'])) {
-        return $formatted;
-    }
-    
-    if (isset($hdData['Properties'])) {
-        $props = $hdData['Properties'];
-        
-        $formatted['type'] = is_array($props['Type'] ?? null) ? ($props['Type']['option'] ?? $props['Type']['name'] ?? '') : ($props['Type'] ?? '');
-        $formatted['strategy'] = is_array($props['Strategy'] ?? null) ? ($props['Strategy']['option'] ?? $props['Strategy']['name'] ?? '') : ($props['Strategy'] ?? '');
-        $formatted['authority'] = is_array($props['InnerAuthority'] ?? null) ? ($props['InnerAuthority']['option'] ?? $props['InnerAuthority']['name'] ?? '') : ($props['InnerAuthority'] ?? '');
-        $formatted['profile'] = is_array($props['Profile'] ?? null) ? ($props['Profile']['option'] ?? $props['Profile']['name'] ?? '') : ($props['Profile'] ?? '');
-        $formatted['definition'] = is_array($props['Definition'] ?? null) ? ($props['Definition']['option'] ?? $props['Definition']['name'] ?? '') : ($props['Definition'] ?? '');
-        $formatted['incarnation_cross'] = is_array($props['IncarnationCross'] ?? null) ? ($props['IncarnationCross']['option'] ?? $props['IncarnationCross']['name'] ?? '') : ($props['IncarnationCross'] ?? '');
-    }
-    
-    if (isset($hdData['DefinedCenters']) && is_array($hdData['DefinedCenters'])) {
-        $formatted['centers']['defined'] = $hdData['DefinedCenters'];
-    }
-    if (isset($hdData['OpenCenters']) && is_array($hdData['OpenCenters'])) {
-        $formatted['centers']['open'] = $hdData['OpenCenters'];
-    }
-    
-    if (isset($hdData['Channels']) && is_array($hdData['Channels'])) {
-        $formatted['channels'] = $hdData['Channels'];
-    }
-    
-    if (isset($hdData['Gates']) && is_array($hdData['Gates'])) {
-        foreach ($hdData['Gates'] as $gate) {
-            if (is_numeric($gate)) {
-                $formatted['gates'][] = (int)$gate;
-            } elseif (is_array($gate) && isset($gate['id'])) {
-                $formatted['gates'][] = (int)$gate['id'];
-            }
-        }
-    }
-    
-    if (isset($hdData['Personality'])) {
-        if (isset($hdData['Personality']['Sun'])) {
-            $sun = $hdData['Personality']['Sun'];
-            $formatted['personality']['sun']['gate'] = (int)($sun['Gate'] ?? $sun['gate'] ?? 0);
-            $formatted['personality']['sun']['line'] = (int)($sun['Line'] ?? $sun['line'] ?? 0);
-        }
-        if (isset($hdData['Personality']['Earth'])) {
-            $earth = $hdData['Personality']['Earth'];
-            $formatted['personality']['earth']['gate'] = (int)($earth['Gate'] ?? $earth['gate'] ?? 0);
-            $formatted['personality']['earth']['line'] = (int)($earth['Line'] ?? $earth['line'] ?? 0);
-        }
-    }
-    
-    if (isset($hdData['Design'])) {
-        if (isset($hdData['Design']['Sun'])) {
-            $sun = $hdData['Design']['Sun'];
-            $formatted['design']['sun']['gate'] = (int)($sun['Gate'] ?? $sun['gate'] ?? 0);
-            $formatted['design']['sun']['line'] = (int)($sun['Line'] ?? $sun['line'] ?? 0);
-        }
-        if (isset($hdData['Design']['Earth'])) {
-            $earth = $hdData['Design']['Earth'];
-            $formatted['design']['earth']['gate'] = (int)($earth['Gate'] ?? $earth['gate'] ?? 0);
-            $formatted['design']['earth']['line'] = (int)($earth['Line'] ?? $earth['line'] ?? 0);
-        }
-    }
-    
-    return $formatted;
-}
-
 /*
 |--------------------------------------------------------------------------
-| STEP 8: FORMAT ASTROLOGY DATA
+| STEP 10: FORMAT ASTROLOGY DATA - FULL EXTRACTION
 |--------------------------------------------------------------------------
 */
 
@@ -605,6 +418,7 @@ $houseSystemMap = [
 ];
 $house_system_name = $houseSystemMap[$house_system] ?? 'Placidus';
 
+// Extract Ascendant and Midheaven
 $ascendant = null;
 $midheaven = null;
 $ascLongitude = 0;
@@ -632,18 +446,33 @@ if (isset($houseCusps['success']) && $houseCusps['success'] == 1 && isset($house
     }
 }
 
+// Complete planet name mapping
 $planetNameMap = [
-    'Sun' => 'Sun', 'Moon' => 'Moon', 'Mercury' => 'Mercury',
-    'Venus' => 'Venus', 'Mars' => 'Mars', 'Jupiter' => 'Jupiter',
-    'Saturn' => 'Saturn', 'Uranus' => 'Uranus', 'Neptune' => 'Neptune',
-    'Pluto' => 'Pluto', 'Chiron' => 'Chiron', 'Lilith' => 'Lilith',
-    'North node' => 'North Node', 'South node' => 'South Node',
-    'True north node' => 'North Node', 'Mean north node' => 'North Node',
-    'Ceres' => 'Ceres', 'Pallas' => 'Pallas', 'Juno' => 'Juno',
-    'Vesta' => 'Vesta', 'Part of fortune' => 'Part of Fortune',
+    'Sun' => 'Sun',
+    'Moon' => 'Moon',
+    'Mercury' => 'Mercury',
+    'Venus' => 'Venus',
+    'Mars' => 'Mars',
+    'Jupiter' => 'Jupiter',
+    'Saturn' => 'Saturn',
+    'Uranus' => 'Uranus',
+    'Neptune' => 'Neptune',
+    'Pluto' => 'Pluto',
+    'Chiron' => 'Chiron',
+    'Lilith' => 'Lilith',
+    'North node' => 'North Node',
+    'South node' => 'South Node',
+    'True north node' => 'North Node',
+    'Mean north node' => 'North Node',
+    'Ceres' => 'Ceres',
+    'Pallas' => 'Pallas',
+    'Juno' => 'Juno',
+    'Vesta' => 'Vesta',
+    'Part of fortune' => 'Part of Fortune',
     'Fortune' => 'Part of Fortune'
 ];
 
+// Extract planetary data with corrected house assignment
 $planets = [];
 $sunLongitude = null;
 $moonLongitude = null;
@@ -652,6 +481,7 @@ if (isset($planetaryPositions['success']) && $planetaryPositions['success'] == 1
     foreach ($planetaryPositions['data'] as $planet) {
         $planetName = $planet['name'];
         
+        // Skip Ascendant and MC as they're handled separately
         if (in_array($planetName, ['Ascendant', 'MC'])) {
             continue;
         }
@@ -659,10 +489,19 @@ if (isset($planetaryPositions['success']) && $planetaryPositions['success'] == 1
         $displayName = $planetNameMap[$planetName] ?? $planetName;
         $fullDegree = (float)$planet['full_degree'];
         
-        if ($planetName == 'Sun') $sunLongitude = $fullDegree;
-        if ($planetName == 'Moon') $moonLongitude = $fullDegree;
+        // Store Sun and Moon for Part of Fortune
+        if ($planetName == 'Sun') {
+            $sunLongitude = $fullDegree;
+        }
+        if ($planetName == 'Moon') {
+            $moonLongitude = $fullDegree;
+        }
         
+        // USE CORRECTED HOUSE ASSIGNMENT with cusp tolerance
         $houseNumber = getAccurateHouseWithCuspTolerance($fullDegree, $houseCusps, 1.2);
+        
+        // Get API house for debugging comparison
+        $apiHouse = $planet['house'] ?? null;
         
         $planetData = [
             'planet' => $displayName,
@@ -674,6 +513,16 @@ if (isset($planetaryPositions['success']) && $planetaryPositions['success'] == 1
             'full_degree' => $fullDegree
         ];
         
+        // Add debugging info if enabled
+        if ($debug && $apiHouse !== null && $houseNumber != $apiHouse) {
+            $planetData['debug_house_correction'] = [
+                'api_house' => $apiHouse,
+                'corrected_house' => $houseNumber,
+                'reason' => 'cusp_boundary_correction'
+            ];
+        }
+        
+        // Avoid duplicates
         $exists = false;
         foreach ($planets as $existing) {
             if ($existing['planet'] === $displayName) {
@@ -688,6 +537,7 @@ if (isset($planetaryPositions['success']) && $planetaryPositions['success'] == 1
     }
 }
 
+// Calculate Part of Fortune if missing
 $pofFound = false;
 foreach ($planets as $planet) {
     if ($planet['planet'] === 'Part of Fortune') {
@@ -713,12 +563,14 @@ if (!$pofFound && $sunLongitude !== null && $moonLongitude !== null && $ascLongi
     ];
 }
 
+// Sort planets by house number
 usort($planets, function($a, $b) {
     $houseA = $a['house'] ?? 99;
     $houseB = $b['house'] ?? 99;
     return $houseA - $houseB;
 });
 
+// Extract aspects
 $aspects = [];
 if (isset($aspectTable['status']) && $aspectTable['status'] == 'success' && isset($aspectTable['data'])) {
     foreach ($aspectTable['data'] as $aspect) {
@@ -732,6 +584,103 @@ if (isset($aspectTable['status']) && $aspectTable['status'] == 'success' && isse
     }
 }
 
+/*
+|--------------------------------------------------------------------------
+| STEP 11: FORMAT HUMAN DESIGN DATA
+|--------------------------------------------------------------------------
+*/
+function formatHumanDesignData($hdData) {
+    $formatted = [
+        'type' => '',
+        'strategy' => '',
+        'authority' => '',
+        'profile' => '',
+        'definition' => '',
+        'incarnation_cross' => '',
+        'centers' => ['defined' => [], 'open' => []],
+        'channels' => [],
+        'gates' => [],
+        'personality' => [
+            'sun' => ['gate' => 0, 'line' => 0],
+            'earth' => ['gate' => 0, 'line' => 0]
+        ],
+        'design' => [
+            'sun' => ['gate' => 0, 'line' => 0],
+            'earth' => ['gate' => 0, 'line' => 0]
+        ]
+    ];
+    
+    if (!$hdData || isset($hdData['error'])) {
+        return $formatted;
+    }
+    
+    // Parse Properties from BodyGraph response
+    if (isset($hdData['Properties'])) {
+        $props = $hdData['Properties'];
+        
+        $formatted['type'] = is_array($props['Type'] ?? null) ? ($props['Type']['option'] ?? $props['Type']['name'] ?? '') : ($props['Type'] ?? '');
+        $formatted['strategy'] = is_array($props['Strategy'] ?? null) ? ($props['Strategy']['option'] ?? $props['Strategy']['name'] ?? '') : ($props['Strategy'] ?? '');
+        $formatted['authority'] = is_array($props['InnerAuthority'] ?? null) ? ($props['InnerAuthority']['option'] ?? $props['InnerAuthority']['name'] ?? '') : ($props['InnerAuthority'] ?? '');
+        $formatted['profile'] = is_array($props['Profile'] ?? null) ? ($props['Profile']['option'] ?? $props['Profile']['name'] ?? '') : ($props['Profile'] ?? '');
+        $formatted['definition'] = is_array($props['Definition'] ?? null) ? ($props['Definition']['option'] ?? $props['Definition']['name'] ?? '') : ($props['Definition'] ?? '');
+        $formatted['incarnation_cross'] = is_array($props['IncarnationCross'] ?? null) ? ($props['IncarnationCross']['option'] ?? $props['IncarnationCross']['name'] ?? '') : ($props['IncarnationCross'] ?? '');
+    }
+    
+    // Parse Centers
+    if (isset($hdData['DefinedCenters']) && is_array($hdData['DefinedCenters'])) {
+        $formatted['centers']['defined'] = $hdData['DefinedCenters'];
+    }
+    if (isset($hdData['OpenCenters']) && is_array($hdData['OpenCenters'])) {
+        $formatted['centers']['open'] = $hdData['OpenCenters'];
+    }
+    
+    // Parse Channels
+    if (isset($hdData['Channels']) && is_array($hdData['Channels'])) {
+        $formatted['channels'] = $hdData['Channels'];
+    }
+    
+    // Parse Gates
+    if (isset($hdData['Gates']) && is_array($hdData['Gates'])) {
+        foreach ($hdData['Gates'] as $gate) {
+            if (is_numeric($gate)) {
+                $formatted['gates'][] = (int)$gate;
+            } elseif (is_array($gate) && isset($gate['id'])) {
+                $formatted['gates'][] = (int)$gate['id'];
+            }
+        }
+    }
+    
+    // Parse Personality Sun & Earth
+    if (isset($hdData['Personality'])) {
+        if (isset($hdData['Personality']['Sun'])) {
+            $sun = $hdData['Personality']['Sun'];
+            $formatted['personality']['sun']['gate'] = (int)($sun['Gate'] ?? $sun['gate'] ?? 0);
+            $formatted['personality']['sun']['line'] = (int)($sun['Line'] ?? $sun['line'] ?? 0);
+        }
+        if (isset($hdData['Personality']['Earth'])) {
+            $earth = $hdData['Personality']['Earth'];
+            $formatted['personality']['earth']['gate'] = (int)($earth['Gate'] ?? $earth['gate'] ?? 0);
+            $formatted['personality']['earth']['line'] = (int)($earth['Line'] ?? $earth['line'] ?? 0);
+        }
+    }
+    
+    // Parse Design Sun & Earth
+    if (isset($hdData['Design'])) {
+        if (isset($hdData['Design']['Sun'])) {
+            $sun = $hdData['Design']['Sun'];
+            $formatted['design']['sun']['gate'] = (int)($sun['Gate'] ?? $sun['gate'] ?? 0);
+            $formatted['design']['sun']['line'] = (int)($sun['Line'] ?? $sun['line'] ?? 0);
+        }
+        if (isset($hdData['Design']['Earth'])) {
+            $earth = $hdData['Design']['Earth'];
+            $formatted['design']['earth']['gate'] = (int)($earth['Gate'] ?? $earth['gate'] ?? 0);
+            $formatted['design']['earth']['line'] = (int)($earth['Line'] ?? $earth['line'] ?? 0);
+        }
+    }
+    
+    return $formatted;
+}
+
 $formattedHD = formatHumanDesignData($hd_response);
 
 /*
@@ -740,7 +689,6 @@ $formattedHD = formatHumanDesignData($hd_response);
 |--------------------------------------------------------------------------
 */
 $result = [
-    'success' => true,
     'astrology' => [
         'house_system' => [
             'name' => $house_system_name,
@@ -754,6 +702,7 @@ $result = [
     'human_design' => $formattedHD
 ];
 
+// Add debug information if requested
 if ($debug) {
     $result['debug'] = [
         'timezone_info' => [
@@ -768,15 +717,41 @@ if ($debug) {
             'state' => $state,
             'coordinates' => ['lat' => $latitude, 'lon' => $longitude]
         ],
+        'house_cusps' => [],
         'api_responses' => [
             'house_cusps_success' => $houseCusps['success'] ?? false,
             'planetary_positions_success' => $planetaryPositions['success'] ?? false,
             'aspect_table_success' => $aspectTable['status'] ?? false
         ]
     ];
+    
+    // Add house cusp data for debugging
+    if (isset($houseCusps['data']['houses'])) {
+        foreach ($houseCusps['data']['houses'] as $house) {
+            $result['debug']['house_cusps'][] = [
+                'house' => $house['house'],
+                'degree' => (float)$house['full_degree'],
+                'sign' => getSignFromDegree((float)$house['full_degree']),
+                'dms' => decimalToDMS((float)$house['full_degree'])
+            ];
+        }
+    }
+    
+    // Add planet cusp distance info
+    $result['debug']['cusp_distances'] = [];
+    foreach ($planets as $planet) {
+        $nearestCusp = findNearestCusp($planet['full_degree'], $houseCusps);
+        if ($nearestCusp && $nearestCusp['distance'] <= 1.5) {
+            $result['debug']['cusp_distances'][] = [
+                'planet' => $planet['planet'],
+                'degree' => $planet['full_degree'],
+                'nearest_house_cusp' => $nearestCusp['house'],
+                'distance_degrees' => $nearestCusp['distance'],
+                'assigned_house' => $planet['house']
+            ];
+        }
+    }
 }
 
-// Output final JSON
-echo json_encode($result, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
-exit;
+echo json_encode($result, JSON_PRETTY_PRINT);
 ?>
