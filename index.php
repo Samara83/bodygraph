@@ -312,34 +312,8 @@ function getHouseNumberFromDegree($degree, $houseCuspsData) {
     return null;
 }
 
-// NEW: Handle cusp boundaries with tolerance
+// DEPRECATED / CORRECTED: Direct geometric house calculation
 function getAccurateHouseWithCuspTolerance($degree, $houseCuspsData, $tolerance = 1.2) {
-    if (!$houseCuspsData || !isset($houseCuspsData['data']['houses'])) {
-        return null;
-    }
-    
-    $normalizedDegree = fmod($degree, 360);
-    if ($normalizedDegree < 0) $normalizedDegree += 360;
-    
-    $houses = $houseCuspsData['data']['houses'];
-    
-    // First check if planet is within tolerance of any cusp
-    foreach ($houses as $house) {
-        $cuspDegree = fmod((float)$house['full_degree'], 360);
-        if ($cuspDegree < 0) $cuspDegree += 360;
-        
-        $diff = min(
-            abs($normalizedDegree - $cuspDegree),
-            360 - abs($normalizedDegree - $cuspDegree)
-        );
-        
-        if ($diff <= $tolerance) {
-            // Planet is within tolerance of a cusp - assign to next house
-            return ($house['house'] % 12) + 1;
-        }
-    }
-    
-    // Otherwise use standard calculation
     return getHouseNumberFromDegree($degree, $houseCuspsData);
 }
 
@@ -500,8 +474,10 @@ if (isset($planetaryPositions['success']) && $planetaryPositions['success'] == 1
             $moonLongitude = $fullDegree;
         }
         
-        // USE CORRECTED HOUSE ASSIGNMENT with cusp tolerance
-        $houseNumber = getAccurateHouseWithCuspTolerance($fullDegree, $houseCusps, 1.2);
+        // Use house number from API or fall back to geometric calculation
+        $houseNumber = isset($planet['house'])
+            ? (int)$planet['house']
+            : getHouseNumberFromDegree($fullDegree, $houseCusps);
         
         // Get API house for debugging comparison
         $apiHouse = $planet['house'] ?? null;
@@ -552,7 +528,7 @@ foreach ($planets as $planet) {
 if (!$pofFound && $sunLongitude !== null && $moonLongitude !== null && $ascLongitude !== null) {
     $isDay = isDayChart($sunLongitude, $ascLongitude);
     $pofLongitude = calculatePartOfFortune($sunLongitude, $moonLongitude, $ascLongitude, $isDay);
-    $pofHouse = getAccurateHouseWithCuspTolerance($pofLongitude, $houseCusps, 1.2);
+    $pofHouse = getHouseNumberFromDegree($pofLongitude, $houseCusps);
     
     $planets[] = [
         'planet' => 'Part of Fortune',
