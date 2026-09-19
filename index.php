@@ -146,9 +146,30 @@ $birth_date_time = "$year-$month-$day $birth_time";
 |--------------------------------------------------------------------------
 | STEP 4: BODYGRAPH HD API (HUMAN DESIGN)
 |--------------------------------------------------------------------------
+| api.bodygraphchart.com occasionally hiccups (timeout, transient error, or
+| a response missing the fields we need) — when that happened previously,
+| formatHumanDesignData() below silently fell back to an all-blank Human
+| Design block while astrology (a completely separate provider) kept
+| working fine, so the request still "succeeded" with half a chart. Retry
+| both calls a few times before accepting that as a real failure.
 */
+function makeBodygraphRequestWithRetry($url, $maxTries = 3, $waitSeconds = 2) {
+    $result = null;
+    for ($attempt = 1; $attempt <= $maxTries; $attempt++) {
+        $result = makeRequest($url);
+        if ($result && !isset($result['error'])) {
+            return $result;
+        }
+        if ($attempt < $maxTries) {
+            error_log("[Bodygraph] Attempt $attempt/$maxTries failed for $url — " . json_encode($result));
+            sleep($waitSeconds);
+        }
+    }
+    return $result;
+}
+
 $bg_url = "https://api.bodygraphchart.com/v210502/locations?api_key={$bg_api_key}&query=" . urlencode($city ?: $state);
-$bgData = makeRequest($bg_url);
+$bgData = makeBodygraphRequestWithRetry($bg_url);
 
 $bgTimezone = $timezone;
 if (!empty($bgData) && !isset($bgData['error']) && isset($bgData[0]['timezone'])) {
@@ -160,7 +181,19 @@ $hd_url = 'https://api.bodygraphchart.com/v221006/hd-data?api_key='
     . '&date=' . urlencode($birth_date_time)
     . '&timezone=' . urlencode($bgTimezone);
 
-$hd_response = makeRequest($hd_url);
+$hd_response = makeBodygraphRequestWithRetry($hd_url);
+
+// If the hd-data call still came back unusable after retries, log the full
+// birth input + raw response so this is actually diagnosable instead of
+// just silently shipping a blank Human Design block.
+if (!$hd_response || isset($hd_response['error']) || !isset($hd_response['Properties'])) {
+    error_log('[Bodygraph] hd-data gave up after retries. Input: ' . json_encode([
+        'birth_date_time' => $birth_date_time,
+        'bgTimezone' => $bgTimezone,
+        'city' => $city,
+        'state' => $state,
+    ]) . ' | Response: ' . json_encode($hd_response));
+}
 
 /*
 |--------------------------------------------------------------------------
@@ -190,15 +223,36 @@ $divineParams = [
 |--------------------------------------------------------------------------
 | STEP 6: DIVINE API REQUESTS
 |--------------------------------------------------------------------------
+| Same transient-failure pattern as the BodyGraph HD calls above — a single
+| dropped/malformed response here used to leave Ascendant/Midheaven (or the
+| whole planet list) silently null with no retry and no error surfaced.
 */
+function makeDivineRequestWithRetry($url, $params, $bearerToken, $isSuccess, $maxTries = 3, $waitSeconds = 2) {
+    $result = null;
+    for ($attempt = 1; $attempt <= $maxTries; $attempt++) {
+        $result = makeRequest($url, 'POST', $params, $bearerToken);
+        if ($isSuccess($result)) {
+            return $result;
+        }
+        if ($attempt < $maxTries) {
+            error_log("[Divine API] Attempt $attempt/$maxTries failed for $url — " . json_encode($result));
+            sleep($waitSeconds);
+        }
+    }
+    return $result;
+}
+
+$isDivineSuccess = function ($r) {
+    return !empty($r) && !isset($r['error']) && isset($r['success']) && $r['success'] == 1;
+};
 
 // House Cusps
 $houseParams = array_merge($divineParams, ['with_rulers' => 1]);
-$houseCusps = makeRequest(
+$houseCusps = makeDivineRequestWithRetry(
     'https://astroapi-4.divineapi.com/western-api/v1/house-cusps',
-    'POST',
     $houseParams,
-    $divine_bearer_token
+    $divine_bearer_token,
+    $isDivineSuccess
 );
 
 // Planetary Positions - Extended for all bodies
@@ -207,24 +261,24 @@ $extendedParams = array_merge($divineParams, [
     'with_retrograde' => 1,
     'with_full_degree' => 1
 ]);
-$planetaryPositions = makeRequest(
+$planetaryPositions = makeDivineRequestWithRetry(
     'https://astroapi-4.divineapi.com/western-api/v1/planetary-positions',
-    'POST',
     $extendedParams,
-    $divine_bearer_token
+    $divine_bearer_token,
+    $isDivineSuccess
 );
 
-// Aspect Table
+// Aspect Table (its success indicator uses 'status' => 'success', not 'success' => 1)
 $aspectParams = array_merge($divineParams, [
     'aspect_orbs_type' => 'FIXED',
     'aspect_orbs_value' => '5_30',
     'aspects_type' => 'ALL'
 ]);
-$aspectTable = makeRequest(
+$aspectTable = makeDivineRequestWithRetry(
     'https://astroapi-8.divineapi.com/western-api/v2/aspect-table',
-    'POST',
     $aspectParams,
-    $divine_bearer_token
+    $divine_bearer_token,
+    function ($r) { return !empty($r) && !isset($r['error']) && ($r['status'] ?? '') === 'success'; }
 );
 
 /*
