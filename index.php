@@ -140,7 +140,10 @@ $hour_input = max(0, min(23, intval($hour)));
 $minutes_input = max(0, min(59, intval($minutes)));
 $seconds_input = 0;
 $birth_time = sprintf('%02d:%02d', $hour_input, $minutes_input);
-$birth_date_time = "$year-$month-$day $birth_time";
+// Zero-pad month/day too — an unpadded date string (e.g. "1978-2-14") is a
+// plausible parser trap on the receiving end, given how strict/fragile the
+// hd-data endpoint has already proven to be about its date/timezone input.
+$birth_date_time = sprintf('%d-%02d-%02d %s', (int)$year, (int)$month, (int)$day, $birth_time);
 
 /*
 |--------------------------------------------------------------------------
@@ -168,6 +171,48 @@ function makeBodygraphRequestWithRetry($url, $maxTries = 3, $waitSeconds = 2) {
     return $result;
 }
 
+// Google's Timezone API still returns a handful of legacy/deprecated IANA
+// zone names (e.g. "Asia/Calcutta" instead of "Asia/Kolkata") for backward
+// compatibility. bodygraphchart.com's hd-data endpoint doesn't understand
+// those aliases — passing one crashes its backend, which returns an HTML
+// error page instead of JSON, and we silently end up with a blank Human
+// Design block. Root-caused via Mysore/Mysuru, India (14 Feb 1978, 06:35):
+// Google geocodes the city as "Mysuru" (bodygraphchart's own /locations
+// lookup doesn't recognize that renamed city and returns []), so we fall
+// back to Google's zone name "Asia/Calcutta" — which is exactly the alias
+// that breaks hd-data. Canonicalize before ever sending it onward.
+function canonicalizeTimezone($tz) {
+    if (class_exists('IntlTimeZone')) {
+        $canonical = IntlTimeZone::getCanonicalID($tz);
+        if ($canonical) {
+            return $canonical;
+        }
+    }
+    // Fallback map of the IANA "backward" links most likely to come back
+    // from a geocoding API, for environments without the intl extension.
+    $legacyAliases = [
+        'Asia/Calcutta' => 'Asia/Kolkata',
+        'Asia/Katmandu' => 'Asia/Kathmandu',
+        'Asia/Rangoon' => 'Asia/Yangon',
+        'Asia/Saigon' => 'Asia/Ho_Chi_Minh',
+        'Asia/Dacca' => 'Asia/Dhaka',
+        'Asia/Ashkhabad' => 'Asia/Ashgabat',
+        'Asia/Tel_Aviv' => 'Asia/Jerusalem',
+        'Asia/Thimbu' => 'Asia/Thimphu',
+        'Asia/Ulan_Bator' => 'Asia/Ulaanbaatar',
+        'Asia/Macao' => 'Asia/Macau',
+        'Europe/Kiev' => 'Europe/Kyiv',
+        'Europe/Uzhgorod' => 'Europe/Kyiv',
+        'Europe/Zaporozhye' => 'Europe/Kyiv',
+        'America/Godthab' => 'America/Nuuk',
+        'America/Montreal' => 'America/Toronto',
+        'Pacific/Ponape' => 'Pacific/Pohnpei',
+        'Pacific/Truk' => 'Pacific/Chuuk',
+        'Pacific/Yap' => 'Pacific/Chuuk',
+    ];
+    return $legacyAliases[$tz] ?? $tz;
+}
+
 $bg_url = "https://api.bodygraphchart.com/v210502/locations?api_key={$bg_api_key}&query=" . urlencode($city ?: $state);
 $bgData = makeBodygraphRequestWithRetry($bg_url);
 
@@ -175,6 +220,7 @@ $bgTimezone = $timezone;
 if (!empty($bgData) && !isset($bgData['error']) && isset($bgData[0]['timezone'])) {
     $bgTimezone = $bgData[0]['timezone'];
 }
+$bgTimezone = canonicalizeTimezone($bgTimezone);
 
 $hd_url = 'https://api.bodygraphchart.com/v221006/hd-data?api_key='
     . urlencode($bg_api_key)
