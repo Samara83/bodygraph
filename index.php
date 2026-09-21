@@ -156,7 +156,7 @@ $birth_date_time = sprintf('%d-%02d-%02d %s', (int)$year, (int)$month, (int)$day
 | working fine, so the request still "succeeded" with half a chart. Retry
 | both calls a few times before accepting that as a real failure.
 */
-function makeBodygraphRequestWithRetry($url, $maxTries = 3, $waitSeconds = 2) {
+function makeBodygraphRequestWithRetry($url, $maxTries = 5, $waitSeconds = 2) {
     $result = null;
     for ($attempt = 1; $attempt <= $maxTries; $attempt++) {
         $result = makeRequest($url);
@@ -273,7 +273,7 @@ $divineParams = [
 | dropped/malformed response here used to leave Ascendant/Midheaven (or the
 | whole planet list) silently null with no retry and no error surfaced.
 */
-function makeDivineRequestWithRetry($url, $params, $bearerToken, $isSuccess, $maxTries = 3, $waitSeconds = 2) {
+function makeDivineRequestWithRetry($url, $params, $bearerToken, $isSuccess, $maxTries = 5, $waitSeconds = 2) {
     $result = null;
     for ($attempt = 1; $attempt <= $maxTries; $attempt++) {
         $result = makeRequest($url, 'POST', $params, $bearerToken);
