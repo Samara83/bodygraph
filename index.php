@@ -19,7 +19,20 @@ $day      = $_GET['day'] ?? '';
 $hour     = $_GET['hour'] ?? '';
 $minutes  = $_GET['minutes'] ?? '';
 $house_system = $_GET['house_system'] ?? 'P';
-$full_name = $_GET['full_name'] ?? 'User';
+$full_name_raw = $_GET['full_name'] ?? 'User';
+// Accented characters (é, ñ, ü...) or punctuation like parentheses/apostrophes
+// in this field — e.g. "Jessica Janette Rosie (née Conway)" — have been
+// confirmed to crash the Divine API backend that full_name gets forwarded
+// to (500 after ~30s, deterministic for that exact input). full_name isn't
+// used in any chart calculation and never appears in our own response, so
+// it's safe to fold to plain ASCII letters/spaces/hyphens before sending it
+// anywhere upstream.
+$full_name = iconv('UTF-8', 'ASCII//TRANSLIT//IGNORE', $full_name_raw);
+$full_name = preg_replace('/[^A-Za-z \-]/', '', $full_name);
+$full_name = trim(preg_replace('/\s+/', ' ', $full_name));
+if ($full_name === '') {
+    $full_name = 'User';
+}
 $gender = $_GET['gender'] ?? 'male';
 $language = $_GET['language'] ?? 'en';
 $debug = $_GET['debug'] ?? false;
